@@ -42,7 +42,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/ARButton.js"></script>
 <script>
 (function(){
   const FT = 0.3048;
@@ -52,10 +51,11 @@
   scene.background = new THREE.Color(0x111115);
   const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.01, 100);
   camera.position.set(0, 1.4, 3.5);
-  const renderer = new THREE.WebGLRenderer({antialias:true});
+  const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(devicePixelRatio);
   renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local');
   document.body.appendChild(renderer.domElement);
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.1));
@@ -123,8 +123,9 @@
     designColor = e.target.value; redrawDesign();
   });
 
-  // ---- AR placement ----
+  // ---- AR (inlined — no ARButton dependency) ----
   let reticle = null, hitTestSource = null, hitTestSourceRequested = false;
+  let xrSession = null;
   const overlay = document.getElementById('overlay');
   const arMsg = document.getElementById('arMsg');
   const statusEl = document.getElementById('arStatus');
@@ -132,7 +133,7 @@
   if (navigator.xr){
     navigator.xr.isSessionSupported('immersive-ar').then(ok=>{
       if(!ok){
-        statusEl.textContent = '❌ WebXR present but AR unsupported — install/update "Google Play Services for AR" (Play Store), fully close and reopen Chrome, then reload this page.';
+        statusEl.textContent = '❌ WebXR present but AR unsupported — install/update "Google Play Services for AR", fully close and reopen Chrome, then reload.';
         return;
       }
       statusEl.textContent = '✅ AR supported — Start AR button below.';
@@ -144,13 +145,31 @@
       reticle.matrixAutoUpdate = false; reticle.visible = false;
       scene.add(reticle);
 
-      const btn = THREE.ARButton.createButton(renderer, {
-        requiredFeatures:['hit-test'],
-        optionalFeatures:['dom-overlay'],
-        domOverlay:{root: overlay}
-      });
-      btn.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:30';
+      const btn = document.createElement('button');
+      btn.textContent = 'Start AR';
+      btn.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:30;padding:10px 24px;font-size:14px;border-radius:24px;border:none;background:#2e7d32;color:#fff;font-weight:600';
       document.body.appendChild(btn);
+
+      btn.addEventListener('click', async ()=>{
+        if (xrSession){ xrSession.end(); return; }
+        try{
+          xrSession = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['dom-overlay'],
+            domOverlay: { root: overlay }
+          });
+          xrSession.addEventListener('end', ()=>{
+            xrSession = null;
+            hitTestSource = null;
+            hitTestSourceRequested = false;
+            btn.textContent = 'Start AR';
+          });
+          await renderer.xr.setSession(xrSession);
+          btn.textContent = 'End AR';
+        }catch(err){
+          statusEl.textContent = '⚠️ AR session failed: ' + err.message;
+        }
+      });
 
       renderer.xr.addEventListener('sessionstart', ()=>{
         overlay.style.display = 'flex';
@@ -158,6 +177,7 @@
         grid.visible = false;
         scene.background = null;
         tarp.visible = false;
+        arMsg.textContent = 'Move your tablet to detect a surface, then tap to place the tarpaulin.';
       });
       renderer.xr.addEventListener('sessionend', ()=>{
         overlay.style.display = 'none';
@@ -173,9 +193,9 @@
       controller.addEventListener('select', ()=>{
         if(!reticle.visible) return;
         tarp.position.setFromMatrixPosition(reticle.matrix);
-        const cam = renderer.xr.getCamera();
-        tarp.rotation.y = Math.atan2(cam.position.x - tarp.position.x,
-                                     cam.position.z - tarp.position.z);
+        const camPos = new THREE.Vector3();
+        renderer.xr.getCamera().getWorldPosition(camPos);
+        tarp.rotation.y = Math.atan2(camPos.x - tarp.position.x, camPos.z - tarp.position.z);
         tarp.visible = true;
         arMsg.textContent = 'Placed! Walk around it — tap again to re-place.';
       });
@@ -184,7 +204,7 @@
       statusEl.textContent = '⚠️ AR support check failed: ' + (err && err.message ? err.message : 'unknown error');
     });
   } else {
-    statusEl.textContent = '❌ No WebXR in this browser. iPhone = never supported (turntable only). Android = use updated Chrome + install "Google Play Services for AR" from the Play Store.';
+    statusEl.textContent = '❌ No WebXR in this browser. iPhone = never supported (turntable only). Android = use updated Chrome + install "Google Play Services for AR".';
   }
 
   function animate(t, frame){
