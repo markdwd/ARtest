@@ -14,7 +14,8 @@
   #hint{position:fixed;bottom:12px;left:0;right:0;text-align:center;font-size:12px;color:#aaa;z-index:5}
   #overlay{position:fixed;inset:0;z-index:20;display:none;align-items:flex-start;
     justify-content:center;pointer-events:none}
-  #overlay .msg{margin-top:20px;background:rgba(0,0,0,.7);padding:8px 14px;border-radius:8px;font-size:14px}
+  #overlay .msg{margin-top:20px;background:rgba(0,0,0,.7);padding:8px 14px;border-radius:8px;
+    font-size:14px;max-width:80%;text-align:center}
 </style>
 </head>
 <body>
@@ -38,7 +39,7 @@
   <div id="arStatus" style="color:#ffa657;font-size:11px;margin-top:4px">Checking AR support…</div>
 </div>
 <div id="hint">Drag to rotate • Scroll/pinch to zoom</div>
-<div id="overlay"><div class="msg" id="arMsg">Move your phone to detect a surface, then tap to place the tarpaulin.</div></div>
+<div id="overlay"><div class="msg" id="arMsg">Starting…</div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -123,9 +124,9 @@
     designColor = e.target.value; redrawDesign();
   });
 
-  // ---- AR (inlined — no ARButton dependency) ----
+  // ---- AR ----
   let reticle = null, hitTestSource = null, hitTestSourceRequested = false;
-  let xrSession = null;
+  let xrSession = null, placedOnce = false, framesNoHit = 0;
   const overlay = document.getElementById('overlay');
   const arMsg = document.getElementById('arMsg');
   const statusEl = document.getElementById('arStatus');
@@ -162,6 +163,7 @@
             xrSession = null;
             hitTestSource = null;
             hitTestSourceRequested = false;
+            placedOnce = false;
             btn.textContent = 'Start AR';
           });
           await renderer.xr.setSession(xrSession);
@@ -173,11 +175,11 @@
 
       renderer.xr.addEventListener('sessionstart', ()=>{
         overlay.style.display = 'flex';
+        arMsg.textContent = 'Slowly move the device to scan the area…';
         controls.enabled = false;
         grid.visible = false;
         scene.background = null;
         tarp.visible = false;
-        arMsg.textContent = 'Move your tablet to detect a surface, then tap to place the tarpaulin.';
       });
       renderer.xr.addEventListener('sessionend', ()=>{
         overlay.style.display = 'none';
@@ -197,9 +199,10 @@
         renderer.xr.getCamera().getWorldPosition(camPos);
         tarp.rotation.y = Math.atan2(camPos.x - tarp.position.x, camPos.z - tarp.position.z);
         tarp.visible = true;
+        placedOnce = true;
         arMsg.textContent = 'Placed! Walk around it — tap again to re-place.';
       });
-      renderer.xr.add(controller);
+      scene.add(controller);   // ← THE FIX (was renderer.xr.add)
     }).catch(err=>{
       statusEl.textContent = '⚠️ AR support check failed: ' + (err && err.message ? err.message : 'unknown error');
     });
@@ -210,19 +213,36 @@
   function animate(t, frame){
     const session = renderer.xr.getSession && renderer.xr.getSession();
     if (session && !hitTestSourceRequested){
-      session.requestReferenceSpace('viewer')
-        .then(rs => session.requestHitTestSource({space: rs}))
-        .then(s => { hitTestSource = s; }).catch(()=>{});
       hitTestSourceRequested = true;
+      if (!session.requestHitTestSource){
+        arMsg.textContent = '⚠️ Hit-test API missing in this browser — update Chrome and reload.';
+        statusEl.textContent = '❌ session.requestHitTestSource is undefined. Your browser is too old for hit-testing even though AR itself works.';
+      } else {
+        session.requestReferenceSpace('viewer')
+          .then(rs => session.requestHitTestSource({space: rs}))
+          .then(s => {
+            hitTestSource = s;
+            arMsg.textContent = 'Point the camera at the floor or a wall…';
+          })
+          .catch(err => {
+            arMsg.textContent = '⚠️ Hit-test failed to start: ' + (err && err.message ? err.message : 'unknown');
+          });
+      }
     }
     if (session && hitTestSource && frame){
       const hits = frame.getHitTestResults(hitTestSource);
       if (hits.length){
+        framesNoHit = 0;
         const pose = hits[0].getPose(renderer.xr.getReferenceSpace());
         reticle.visible = true;
         reticle.matrix.fromArray(pose.transform.matrix);
+        if(!placedOnce) arMsg.textContent = 'Green ring found a surface — tap to place the tarpaulin.';
       } else {
+        framesNoHit++;
         reticle.visible = false;
+        if(!placedOnce && framesNoHit > 120){
+          arMsg.textContent = 'No surface detected yet — try the floor, and move slower. Textured, well-lit surfaces work best.';
+        }
       }
     }
     controls.update();
