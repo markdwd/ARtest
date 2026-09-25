@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PrintifyMe – AR Tarp Preview Demo</title>
+
+  <!-- Google's model-viewer web component -->
+  <script type="module"
+    src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.1.0/model-viewer.min.js">
+  </script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f3f3f3;
+      color: #222;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 5px;
+    }
+
+    .note {
+      margin-top: 0;
+      color: #555;
+    }
+
+    .controls {
+      background: white;
+      padding: 16px;
+      border-radius: 10px;
+      margin: 20px 0;
+    }
+
+    label {
+      display: block;
+      margin-top: 10px;
+      font-weight: bold;
+    }
+
+    input[type="number"],
+    input[type="file"] {
+      margin-top: 5px;
+      padding: 8px;
+      width: 180px;
+      box-sizing: border-box;
+    }
+
+    button {
+      margin-top: 15px;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 7px;
+      cursor: pointer;
+      background: #222;
+      color: white;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    model-viewer {
+      width: 100%;
+      height: 520px;
+      background: #ddd;
+      border-radius: 10px;
+    }
+
+    .dimensions {
+      margin-top: 12px;
+      font-weight: bold;
+    }
+
+    .ar-note {
+      margin-top: 10px;
+      color: #555;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>PrintifyMe AR Tarp Preview</h1>
+    <p class="note">
+      Prototype: preview a tarp design at its specified real-world dimensions.
+    </p>
+
+    <div class="controls">
+      <label for="width">Width (feet)</label>
+      <input id="width" type="number" min="0.1" step="0.1" value="8">
+
+      <label for="height">Height (feet)</label>
+      <input id="height" type="number" min="0.1" step="0.1" value="9">
+
+      <label for="design">Upload tarp design</label>
+      <input id="design" type="file" accept="image/*">
+
+      <br>
+      <button id="updateButton">Update 3D Preview</button>
+    </div>
+
+    <!--
+      IMPORTANT:
+      This demo uses a generated GLB rectangle.
+      The JavaScript below creates a simple GLB in memory with the
+      requested physical dimensions and the uploaded image as its texture.
+
+      AR scale is fixed:
+      ar-scale="fixed"
+    -->
+    <model-viewer
+      id="viewer"
+      camera-controls
+      ar
+      ar-modes="webxr scene-viewer quick-look"
+      ar-scale="fixed"
+      shadow-intensity="1"
+      exposure="1"
+      camera-orbit="0deg 75deg 3m"
+      alt="Tarp preview">
+
+      <button slot="ar-button" id="arButton">
+        View Tarp in AR
+      </button>
+    </model-viewer>
+
+    <div class="dimensions" id="dimensions">
+      Actual size: 8 ft × 9 ft
+    </div>
+
+    <div class="ar-note">
+      AR resizing is intentionally disabled. The prototype is intended to
+      preserve the selected physical dimensions.
+    </div>
+  </div>
+
+<script>
+/*
+  NOTE ABOUT THIS PROTOTYPE
+
+  The easiest reliable way to demonstrate model-viewer is to use a GLB model.
+  This file therefore creates a very simple GLB tarp dynamically.
+
+  The rectangle is authored in meters:
+      1 foot = 0.3048 meters
+
+  The uploaded image becomes the tarp's texture.
+
+  This is intentionally a prototype, not a production 3D asset pipeline.
+*/
+
+// ---------- Basic helpers ----------
+
+function align4(n) {
+  return (n + 3) & ~3;
+}
+
+function strBytes(str) {
+  return new TextEncoder().encode(str);
+}
+
+function padBytes(bytes, length, value = 0) {
+  const out = new Uint8Array(length);
+  out.set(bytes);
+  if (value !== 0) out.fill(value, bytes.length);
+  return out;
+}
+
+function makeGLB(widthMeters, heightMeters, imageBytes, imageMime) {
+  /*
+    Geometry:
+
+      (-w/2, 0, +h/2) -------- (+w/2, 0, +h/2)
+            |                         |
+            |                         |
+            |                         |
+      (-w/2, 0, -h/2) -------- (+w/2, 0, -h/2)
+
+    The tarp is a single plane.
+
+    For a simple visualization prototype, the plane is vertical.
+  */
+
+  const positions = new Float32Array([
+    -widthMeters / 2, 0,  heightMeters / 2,
+     widthMeters / 2, 0,  heightMeters / 2,
+     widthMeters / 2, 0, -heightMeters / 2,
+    -widthMeters / 2, 0, -heightMeters / 2
+  ]);
+
+  const normals = new Float32Array([
+    0, 1, 0,
+    0, 1, 0,
+    0, 1, 0,
+    0, 1, 0
+  ]);
+
+  const texcoords = new Float32Array([
+    0, 1,
+    1, 1,
+    1, 0,
+    0, 0
+  ]);
+
+  const indices = new Uint16Array([
+    0, 1, 2,
+    0, 2, 3
+  ]);
+
+  const posBytes = new Uint8Array(positions.buffer);
+  const normBytes = new Uint8Array(normals.buffer);
+  const uvBytes = new Uint8Array(texcoords.buffer);
+  const indexBytes = new Uint8Array(indices.buffer);
+
+  let offset = 0;
+
+  const chunks = [];
+
+  function addChunk(bytes) {
+    offset = align4(offset);
+    const start = offset;
+    chunks.push({ start, bytes });
+    offset += bytes.length;
+    return start;
+  }
+
+  const posOffset = addChunk(posBytes);
+  const normOffset = addChunk(normBytes);
+  const uvOffset = addChunk(uvBytes);
+  const indexOffset = addChunk(indexBytes);
+
+  offset = align4(offset);
+  const imageOffset = offset;
+  chunks.push({ start: imageOffset, bytes: imageBytes });
+  offset += imageBytes.length;
+
+  const bufferLength = align4(offset);
+
+  const json = {
+    asset: {
+      version: "2.0",
+      generator: "PrintifyMe AR Prototype"
+    },
+
+    scene: 0,
+
+    scenes: [
+      {
+        nodes: [0]
+      }
+    ],
+
+    nodes: [
+      {
+        mesh: 0
+      }
+    ],
+
+    meshes: [
+      {
+        primitives: [
+          {
+            attributes: {
+              POSITION: 0,
+              NORMAL: 1,
+              TEXCOORD_0: 2
+            },
+            indices: 3,
+            material: 0
+          }
+        ]
+      }
+    ],
+
+    materials: [
+      {
+        pbrMetallicRoughness: {
+          baseColorTexture: {
+            index: 0
+          },
+          metallicFactor: 0,
+          roughnessFactor: 1
+        },
+        doubleSided: true
+      }
+    ],
+
+    textures: [
+      {
+        sampler: 0,
+        source: 0
+      }
+    ],
+
+    samplers: [
+      {
+        magFilter: 9729,
+        minFilter: 9987,
+        wrapS: 33071,
+        wrapT: 33071
+      }
+    ],
+
+    images: [
+      {
+        bufferView: 4,
+        mimeType: imageMime
+      }
+    ],
+
+    accessors: [
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 4,
+        type: "VEC3",
+        min: [-widthMeters / 2, 0, -heightMeters / 2],
+        max: [ widthMeters / 2, 0,  heightMeters / 2]
+      },
+      {
+        bufferView: 1,
+        componentType: 5126,
+        count: 4,
+        type: "VEC3"
+      },
+      {
+        bufferView: 2,
+        componentType: 5126,
+        count: 4,
+        type: "VEC2"
+      },
+      {
+        bufferView: 3,
+        componentType: 5123,
+        count: 6,
+        type: "SCALAR"
+      }
+    ],
+
+    bufferViews: [
+      {
+        buffer: 0,
+        byteOffset: posOffset,
+        byteLength: posBytes.length,
+        target: 34962
+      },
+      {
+        buffer: 0,
+        byteOffset: normOffset,
+        byteLength: normBytes.length,
+        target: 34962
+      },
+      {
+        buffer: 0,
+        byteOffset: uvOffset,
+        byteLength: uvBytes.length,
+        target: 34962
+      },
+      {
+        buffer: 0,
+        byteOffset: indexOffset,
+        byteLength: indexBytes.length,
+        target: 34963
+      },
+      {
+        buffer: 0,
+        byteOffset: imageOffset,
+        byteLength: imageBytes.length
+      }
+    ],
+
+    buffers: [
+      {
+        byteLength: bufferLength
+      }
+    ]
+  };
+
+  const jsonBytes = strBytes(JSON.stringify(json));
+  const paddedJson = padBytes(jsonBytes, align4(jsonBytes.length), 0x20);
+
+  const buffer = new Uint8Array(
+    12 +
+    8 + paddedJson.length +
+    8 + bufferLength
+  );
+
+  // GLB header
+  const view = new DataView(buffer.buffer);
+
+  view.setUint32(0, 0x46546C67, true); // glTF
+  view.setUint32(4, 2, true);
+  view.setUint32(8, buffer.length, true);
+
+  let cursor = 12;
+
+  // JSON chunk
+  view.setUint32(cursor, paddedJson.length, true);
+  cursor += 4;
+
+  view.setUint32(cursor, 0x4E4F534A, true); // JSON
+  cursor += 4;
+
+  buffer.set(paddedJson, cursor);
+  cursor += paddedJson.length;
+
+  // BIN chunk
+  view.setUint32(cursor, bufferLength, true);
+  cursor += 4;
+
+  view.setUint32(cursor, 0x004E4942, true); // BIN
+  cursor += 4;
+
+  for (const chunk of chunks) {
+    buffer.set(chunk.bytes, cursor + chunk.start);
+  }
+
+  return new Blob([buffer], {
+    type: "model/gltf-binary"
+  });
+}
+
+
+// ---------- Default demo texture ----------
+
+function createDefaultTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 800;
+
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#eeeeee";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.strokeStyle = "#333333";
+  ctx.lineWidth = 12;
+  ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+
+  ctx.fillStyle = "#222222";
+  ctx.font = "bold 110px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("PRINTIFYME", canvas.width / 2, canvas.height / 2 - 60);
+
+  ctx.font = "50px Arial";
+  ctx.fillText("8 ft × 9 ft Tarp Preview", canvas.width / 2, canvas.height / 2 + 60);
+
+  return new Promise(resolve => {
+    canvas.toBlob(blob => {
+      blob.arrayBuffer().then(buffer => {
+        resolve({
+          bytes: new Uint8Array(buffer),
+          mime: "image/png"
+        });
+      });
+    }, "image/png");
+  });
+}
+
+
+// ---------- Build model ----------
+
+let currentModelURL = null;
+
+async function updateModel() {
+  const widthFeet = parseFloat(document.getElementById("width").value);
+  const heightFeet = parseFloat(document.getElementById("height").value);
+  const designInput = document.getElementById("design");
+  const viewer = document.getElementById("viewer");
+
+  if (!Number.isFinite(widthFeet) || !Number.isFinite(heightFeet) ||
+      widthFeet <= 0 || heightFeet <= 0) {
+    alert("Please enter valid dimensions.");
+    return;
+  }
+
+  const widthMeters = widthFeet * 0.3048;
+  const heightMeters = heightFeet * 0.3048;
+
+  let imageBytes;
+  let imageMime;
+
+  if (designInput.files.length > 0) {
+    const file = designInput.files[0];
+
+    imageBytes = new Uint8Array(await file.arrayBuffer());
+    imageMime = file.type || "image/png";
+  } else {
+    const defaultTexture = await createDefaultTexture();
+
+    imageBytes = defaultTexture.bytes;
+    imageMime = defaultTexture.mime;
+  }
+
+  const glb = makeGLB(
+    widthMeters,
+    heightMeters,
+    imageBytes,
+    imageMime
+  );
+
+  if (currentModelURL) {
+    URL.revokeObjectURL(currentModelURL);
+  }
+
+  currentModelURL = URL.createObjectURL(glb);
+
+  viewer.src = currentModelURL;
+
+  document.getElementById("dimensions").textContent =
+    `Actual size: ${widthFeet} ft × ${heightFeet} ft ` +
+    `(${widthMeters.toFixed(3)} m × ${heightMeters.toFixed(3)} m)`;
+}
+
+document.getElementById("updateButton")
+  .addEventListener("click", updateModel);
+
+document.getElementById("design")
+  .addEventListener("change", updateModel);
+
+// Create initial 8 × 9 ft demo
+updateModel();
+</script>
+
+</body>
+</html>
