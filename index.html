@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>PrintifyMe — Tarpaulin 3D Preview Demo</title>
+<style>
+  body{margin:0;overflow:hidden;font-family:system-ui,sans-serif;background:#111;color:#eee}
+  #panel{position:fixed;top:10px;left:10px;z-index:10;background:rgba(0,0,0,.65);
+    padding:10px 12px;border-radius:10px;font-size:13px;line-height:1.5;max-width:280px}
+  #panel h1{font-size:14px;margin:0 0 6px}
+  select{font-size:13px;margin:2px 0 8px;width:100%}
+  #sizeLabel{font-weight:600;color:#8ff}
+  #hint{position:fixed;bottom:12px;left:0;right:0;text-align:center;font-size:12px;color:#aaa;z-index:5}
+  #overlay{position:fixed;inset:0;z-index:20;display:none;align-items:flex-start;
+    justify-content:center;pointer-events:none}
+  #overlay .msg{margin-top:20px;background:rgba(0,0,0,.7);padding:8px 14px;border-radius:8px;font-size:14px}
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>Tarpaulin 3D Preview — PrintifyMe demo</h1>
+  Size:
+  <select id="sizeSel">
+    <option value="0.61,0.91">2 ft × 3 ft</option>
+    <option value="0.61,2.44" selected>2 ft × 8 ft</option>
+    <option value="1.22,2.44">4 ft × 8 ft</option>
+  </select>
+  Color:
+  <select id="colorSel">
+    <option value="#1565c0">Blue</option>
+    <option value="#2e7d32">Green</option>
+    <option value="#c62828">Red</option>
+    <option value="#eeeeee">White</option>
+  </select>
+  <div id="sizeLabel"></div>
+  <div style="color:#999;font-size:11px;margin-top:6px">True physical scale — 1 unit = 1 meter.</div>
+</div>
+<div id="hint">Drag to rotate • Scroll/pinch to zoom</div>
+<div id="overlay"><div class="msg" id="arMsg">Move your phone to detect a surface, then tap to place the tarpaulin.</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/ARButton.js"></script>
+<script>
+(function(){
+  const FT = 0.3048;
+  let sizeW = 0.61, sizeH = 2.44, designColor = '#1565c0';
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111115);
+  const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.01, 100);
+  camera.position.set(0, 1.4, 3.5);
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.1));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.7); dl.position.set(2,3,2); scene.add(dl);
+
+  const grid = new THREE.GridHelper(10, 20, 0x333355, 0x222244); // 0.5 m cells
+  scene.add(grid);
+
+  const tarp = new THREE.Group(); scene.add(tarp);
+
+  const designCanvas = document.createElement('canvas');
+  const designTex = new THREE.CanvasTexture(designCanvas);
+
+  function redrawDesign(){
+    const px = 100;
+    const w = Math.round((sizeW/FT)*px), h = Math.round((sizeH/FT)*px);
+    designCanvas.width = w; designCanvas.height = h;
+    const c = designCanvas.getContext('2d');
+    c.fillStyle = designColor; c.fillRect(0,0,w,h);
+    c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = Math.max(2, w*0.012);
+    c.strokeRect(w*0.04, h*0.08, w*0.92, h*0.84);
+    c.fillStyle = 'rgba(255,255,255,.95)';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    const fs = Math.min(h*0.28, w*0.09);
+    c.font = `bold ${fs}px system-ui, sans-serif`;
+    c.fillText('YOUR DESIGN HERE', w/2, h*0.42);
+    c.font = `${fs*0.55}px system-ui, sans-serif`;
+    const fw = (sizeW/FT).toFixed(1).replace(/\.0$/,''), fh = (sizeH/FT).toFixed(1).replace(/\.0$/,'');
+    c.fillText(`${fw} ft × ${fh} ft`, w/2, h*0.68);
+    c.fillStyle = 'rgba(0,0,0,.35)';  // grommets
+    const r = Math.max(3, Math.min(w,h)*0.02), m = w*0.05, mv = h*0.12;
+    [[m,mv],[w-m,mv],[m,h-mv],[w-m,h-mv]].forEach(p=>{
+      c.beginPath(); c.arc(p[0],p[1],r,0,7); c.fill();
+    });
+    designTex.needsUpdate = true;
+  }
+
+  const edgeMat = new THREE.MeshStandardMaterial({color:0xdddddd, roughness:.7});
+  const designMat = new THREE.MeshStandardMaterial({map:designTex, roughness:.65, side:THREE.DoubleSide});
+  let mesh = null;
+  function rebuildTarp(){
+    if(mesh){ tarp.remove(mesh); mesh.geometry.dispose(); }
+    mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(sizeW, sizeH, 0.02),
+      [edgeMat,edgeMat,edgeMat,edgeMat,designMat,designMat]
+    );
+    mesh.position.y = sizeH/2;
+    tarp.add(mesh);
+    redrawDesign();
+    const fw = (sizeW/FT).toFixed(1).replace(/\.0$/,''), fh = (sizeH/FT).toFixed(1).replace(/\.0$/,'');
+    document.getElementById('sizeLabel').textContent =
+      `${fw} ft × ${fh} ft  =  ${sizeW.toFixed(2)} m × ${sizeH.toFixed(2)} m`;
+    controls.target.set(0, sizeH/2, 0);
+  }
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  rebuildTarp();
+
+  document.getElementById('sizeSel').addEventListener('change', e=>{
+    const [w,h] = e.target.value.split(',').map(Number);
+    sizeW = w; sizeH = h; rebuildTarp();
+  });
+  document.getElementById('colorSel').addEventListener('change', e=>{
+    designColor = e.target.value; redrawDesign();
+  });
+
+  // ---- AR placement ----
+  let reticle = null, hitTestSource = null, hitTestSourceRequested = false;
+  const overlay = document.getElementById('overlay');
+  const arMsg = document.getElementById('arMsg');
+
+  if (navigator.xr){
+    navigator.xr.isSessionSupported('immersive-ar').then(ok=>{
+      if(!ok) return;
+      reticle = new THREE.Mesh(
+        new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI/2),
+        new THREE.MeshBasicMaterial({color:0x88ff88})
+      );
+      reticle.matrixAutoUpdate = false; reticle.visible = false;
+      scene.add(reticle);
+
+      const btn = THREE.ARButton.createButton(renderer, {
+        requiredFeatures:['hit-test'],
+        optionalFeatures:['dom-overlay'],
+        domOverlay:{root: overlay}
+      });
+      btn.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:30';
+      document.body.appendChild(btn);
+
+      renderer.xr.addEventListener('sessionstart', ()=>{
+        overlay.style.display = 'flex';
+        controls.enabled = false;
+        grid.visible = false;
+        scene.background = null;
+        tarp.visible = false;
+      });
+      renderer.xr.addEventListener('sessionend', ()=>{
+        overlay.style.display = 'none';
+        controls.enabled = true;
+        grid.visible = true;
+        scene.background = new THREE.Color(0x111115);
+        tarp.visible = true;
+        tarp.position.set(0,0,0);
+        tarp.rotation.set(0,0,0);
+      });
+
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('select', ()=>{
+        if(!reticle.visible) return;
+        tarp.position.setFromMatrixPosition(reticle.matrix);
+        const cam = renderer.xr.getCamera();
+        tarp.rotation.y = Math.atan2(cam.position.x - tarp.position.x,
+                                     cam.position.z - tarp.position.z);
+        tarp.visible = true;
+        arMsg.textContent = 'Placed! Walk around it — tap again to re-place.';
+      });
+      renderer.xr.add(controller);
+    }).catch(()=>{});
+  }
+
+  function animate(t, frame){
+    const session = renderer.xr.getSession && renderer.xr.getSession();
+    if (session && !hitTestSourceRequested){
+      session.requestReferenceSpace('viewer')
+        .then(rs => session.requestHitTestSource({space: rs}))
+        .then(s => { hitTestSource = s; }).catch(()=>{});
+      hitTestSourceRequested = true;
+    }
+    if (session && hitTestSource && frame){
+      const hits = frame.getHitTestResults(hitTestSource);
+      if (hits.length){
+        const pose = hits[0].getPose(renderer.xr.getReferenceSpace());
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+      } else {
+        reticle.visible = false;
+      }
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  renderer.setAnimationLoop(animate);
+
+  addEventListener('resize', ()=>{
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+})();
+</script>
+</body>
+</html>
