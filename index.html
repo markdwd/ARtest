@@ -35,6 +35,7 @@
   </select>
   <div id="sizeLabel"></div>
   <div style="color:#999;font-size:11px;margin-top:6px">True physical scale — 1 unit = 1 meter.</div>
+  <div id="arStatus" style="color:#ffa657;font-size:11px;margin-top:4px">Checking AR support…</div>
 </div>
 <div id="hint">Drag to rotate • Scroll/pinch to zoom</div>
 <div id="overlay"><div class="msg" id="arMsg">Move your phone to detect a surface, then tap to place the tarpaulin.</div></div>
@@ -60,7 +61,7 @@
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.1));
   const dl = new THREE.DirectionalLight(0xffffff, 0.7); dl.position.set(2,3,2); scene.add(dl);
 
-  const grid = new THREE.GridHelper(10, 20, 0x333355, 0x222244); // 0.5 m cells
+  const grid = new THREE.GridHelper(10, 20, 0x333355, 0x222244);
   scene.add(grid);
 
   const tarp = new THREE.Group(); scene.add(tarp);
@@ -84,7 +85,7 @@
     c.font = `${fs*0.55}px system-ui, sans-serif`;
     const fw = (sizeW/FT).toFixed(1).replace(/\.0$/,''), fh = (sizeH/FT).toFixed(1).replace(/\.0$/,'');
     c.fillText(`${fw} ft × ${fh} ft`, w/2, h*0.68);
-    c.fillStyle = 'rgba(0,0,0,.35)';  // grommets
+    c.fillStyle = 'rgba(0,0,0,.35)';
     const r = Math.max(3, Math.min(w,h)*0.02), m = w*0.05, mv = h*0.12;
     [[m,mv],[w-m,mv],[m,h-mv],[w-m,h-mv]].forEach(p=>{
       c.beginPath(); c.arc(p[0],p[1],r,0,7); c.fill();
@@ -126,10 +127,16 @@
   let reticle = null, hitTestSource = null, hitTestSourceRequested = false;
   const overlay = document.getElementById('overlay');
   const arMsg = document.getElementById('arMsg');
+  const statusEl = document.getElementById('arStatus');
 
   if (navigator.xr){
     navigator.xr.isSessionSupported('immersive-ar').then(ok=>{
-      if(!ok) return;
+      if(!ok){
+        statusEl.textContent = '❌ WebXR present but AR unsupported — install/update "Google Play Services for AR" (Play Store), fully close and reopen Chrome, then reload this page.';
+        return;
+      }
+      statusEl.textContent = '✅ AR supported — Start AR button below.';
+
       reticle = new THREE.Mesh(
         new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI/2),
         new THREE.MeshBasicMaterial({color:0x88ff88})
@@ -173,7 +180,11 @@
         arMsg.textContent = 'Placed! Walk around it — tap again to re-place.';
       });
       renderer.xr.add(controller);
-    }).catch(()=>{});
+    }).catch(err=>{
+      statusEl.textContent = '⚠️ AR support check failed: ' + (err && err.message ? err.message : 'unknown error');
+    });
+  } else {
+    statusEl.textContent = '❌ No WebXR in this browser. iPhone = never supported (turntable only). Android = use updated Chrome + install "Google Play Services for AR" from the Play Store.';
   }
 
   function animate(t, frame){
